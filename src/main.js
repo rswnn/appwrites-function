@@ -1,33 +1,70 @@
-import { Client } from 'node-appwrite';
+import { readFileSync } from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import detectPlatforms from './detectors.js'
+import config from '../config.js'
 
-// This is your Appwrite function
-// It's executed each time we get a request
-export default async ({ req, res, log, error }) => {
-  // Why not try the Appwrite SDK?
-  //
-  // const client = new Client()
-  //    .setEndpoint('https://cloud.appwrite.io/v1')
-  //    .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID)
-  //    .setKey(process.env.APPWRITE_API_KEY);
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
-  // You can log messages to the console
-  log('Hello, Logs!');
+const staticFolder = path.join(__dirname, '../static')
 
-  // If something goes wrong, log an error
-  error('Hello, Errors!');
+export default async ({ req, res, log }) => {
 
-  // The `req` object contains the request data
-  if (req.method === 'GET') {
-    // Send a response with the res object helpers
-    // `res.send()` dispatches a string back to the client
-    return res.send('Hello, World!');
+  if (config.length === 0) {
+    throw new Error('CONFIG environment variable must be set')
   }
 
-  // `res.json()` is a handy helper for sending JSON
-  return res.json({
-    motto: 'Build like a team of hundreds_',
-    learn: 'https://appwrite.io/docs',
-    connect: 'https://appwrite.io/discord',
-    getInspired: 'https://builtwith.appwrite.io',
-  });
-};
+  const targets = config.find(({ path }) => path === req.path)?.targets
+  if (!targets) {
+    log(`No targets for path ${req.path}`)
+    return res.empty()
+  }
+  log(`Found targets for path ${req.path}`)
+
+  const platforms = detectPlatforms(req.headers['user-agent'])
+  log(`Detected platforms: ${platforms.join(', ')}`)
+
+  for (const platform of platforms) {
+    const target = targets[platform]
+    if (!target) {
+      log(`No redirect for platform ${platform}`)
+      continue
+    }
+
+    if (platform === 'default') {
+      log(`Default for platform ${platform}`)
+      return res.redirect(targets.default)
+    }
+
+    if (typeof target === 'string') {
+      log(`Simple redirect to ${target}`)
+      return res.redirect(target)
+    }
+
+    if (typeof target === 'object' && target.appName) {
+      log(`Deep link to app=${target.appName} path=${target.appPath}`)
+
+      const template = readFileSync(
+        path.join(staticFolder, 'deeplink.html')
+      ).toString()
+
+      const html = template
+        .split('{{APP_NAME}}')
+        .join(target.appName)
+        .split('{{APP_PATH}}')
+        .join(target.appPath)
+        .split('{{APP_PACKAGE}}')
+        .join(target.appPackage ?? '')
+        .split('{{FALLBACK}}')
+        .join(target.fallback ?? target.default ?? '')
+
+      return res.send(html, 200, {
+        'Content-Type': 'text/html; charset=utf-8',
+      })
+    }
+  }
+
+  log(`Out of ideas, returning empty response`)
+  return res.empty()
+}
